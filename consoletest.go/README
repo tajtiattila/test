@@ -1,0 +1,81 @@
+
+Test program in GO to check UTF-8 support in Windows Command Prompt (cmd.exe)
+
+There are basically two ways to use Unicode with cmd.exe:
+
+
+1. Using codepage 65001
+
++ Setting this codepage make utf-8 output trivial, it works eg. with WriteFile
+
++ Simplest solution from Windows Vista and up
+
+- On Windows XP SP3, even some trivial programs break with this (eg. more), this could be a problem 
+  when using a pipe for example
+
+- On Windows XP SP3, scripts (.bat and .cmd files) no longer work once this codepage is set 
+
+Practically there are two ways to use this:
+
+
+1.a. Adjusting the codepage with chcp utility outside the Go program, eg:
+
+chcp 65001 && program.exe && chcp 437
+
++ No change needed in our program
+
+- If program is aborted (eg. Ctrl-C), codepage is not reset, command promt becomes hard to use with XP (see above)
+
+- Not possible to use pipes with certain programs (eg. more)
+
+
+1.b. Adjust the codepage within the go program, reset upon exit:
+
+func main() {
+	cpsave := GetConsoleOutputCP()
+	SetConsoleOutputCP(65001)
+	defer SetConsoleOutputCP(cpsave)
+
+	...
+}
+
+Currently this is not much better than the above, because the program might be exited with os.Exit
+without having deferred calls executed. This does not solve the problem with pipes either, perhaps
+also a problem when aborted with Ctrl-C (untested).
+
+It might be an acceptable solution if the runtime could set and reset the codepage upon startup
+and exit. Then the program would work reliably as long as no pipes are used.
+
+2. Use the WriteConsoleW API to print to the console
+
+This seems to be the best solution, unfortunately it would be a big change, because it is not quite 
+compatible with file I/O. This means that something like the following would be required in place of
+syscall.Write():
+
+var UseUnicodeConsole = bool(true)
+
+func Write(fd int, p []byte) (n int, errno int) {
+	var mode MODE
+	var done uint32
+	if UseUnicodeConsole && GetConsoleMode(int32(fd), &mode) {
+		buf16 = syscall.StringToUTF16(string(p))
+		if ok, e:= WriteConsole(int32(fd), buf16, &done, nil); !ok {
+			return 0, e
+		}
+		// convert length of utf16 characters to number of bytes written
+		if done == len(buf16) {
+			done = len(p)
+		} else {
+			done = 0
+			for _, rune := range utf16.Decode(buf16[:done]) {
+				done += utf8.RuneLength(rune)
+			}
+		}
+	} else {
+		if ok, e := WriteFile(int32(fd), p, &done, nil); !ok {
+			return 0, e
+		}
+	}
+	return int(done), 0
+}
+
